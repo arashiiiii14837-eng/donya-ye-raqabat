@@ -1,4 +1,3 @@
-
 const express = require('express');
 const http = require('http');
 const WebSocket = require('ws');
@@ -6,6 +5,67 @@ const WebSocket = require('ws');
 const app = express();
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
+
+app.use(express.json({ limit: '10kb' }));
+
+app.use((req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  next();
+});
+
+// لیدربرد مشترک
+const leaderboard = new Map();
+
+app.post('/api/leaderboard', (req, res) => {
+  const name = String(req.body?.name || '').trim().slice(0, 24);
+
+  if (!name) {
+    return res.status(400).json({ error: 'name_required' });
+  }
+
+  const coins = Math.max(
+    0,
+    Math.min(100000000, Math.floor(Number(req.body.coins) || 0))
+  );
+
+  const level = Math.max(
+    0,
+    Math.min(100000, Math.floor(Number(req.body.level) || 0))
+  );
+
+  const old = leaderboard.get(name) || {
+    name,
+    coins: 0,
+    level: 0
+  };
+
+  old.coins = coins;
+  old.level = level;
+
+  leaderboard.set(name, old);
+
+  res.json({ ok: true });
+});
+
+app.get('/api/leaderboard', (req, res) => {
+  const field = req.query.type === 'level' ? 'level' : 'coins';
+
+  const players = [...leaderboard.values()]
+    .sort((a, b) => b[field] - a[field] || a.name.localeCompare(b.name))
+    .slice(0, 10)
+    .map(player => ({
+      name: player.name,
+      value: player[field]
+    }));
+
+  res.json({
+    type: field,
+    players
+  });
+});
 
 let nextRoomId = 1;
 const waiting = new Map();
@@ -142,7 +202,7 @@ function startRound(room) {
 }
 
 function broadcastTic(room) {
-  room.players.forEach((p, i) => {
+  room.players.forEach(p => {
     send(p, {
       type: 'tic_state',
       board: room.board,
@@ -260,7 +320,6 @@ function joinQueue(ws, data) {
   waiting.delete(kind);
 
   const id = nextRoomId++;
-
   const players = [opponent, ws];
 
   const room = {
