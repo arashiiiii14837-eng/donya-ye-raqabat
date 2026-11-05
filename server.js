@@ -1,61 +1,414 @@
-const express = require("express");
-const http = require("http");
-const WebSocket = require("ws");
+
+const express = require('express');
+const http = require('http');
+const WebSocket = require('ws');
 
 const app = express();
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
-let waitingPlayer = null;
-let roomNumber = 0;
+let nextRoomId = 1;
+const waiting = new Map();
+const rooms = new Map();
 
-app.get("/", (req, res) => {
-  res.send("Donya Ye Raqabat Server is Online!");
+const challenges = {
+  word: [
+    { q: 'کدام واژه با «آ» شروع می‌شود؟ (آب، میز، کتاب)', a: 'آب' },
+    { q: 'مخالف واژهٔ «سرد» چیست؟', a: 'گرم' },
+    { q: 'جمع «کتاب» چیست؟', a: 'کتاب ها' },
+    { q: 'کدام یک میوه است؟ (سیب، صندلی، مداد)', a: 'سیب' },
+    { q: 'مخالف «بلند» چیست؟', a: 'کوتاه' }
+  ],
+  math: [
+    { q: '۷ + ۵ چند می‌شود؟', a: '12' },
+    { q: '۹ × ۳ چند می‌شود؟', a: '27' },
+    { q: '۲۵ - ۸ چند می‌شود؟', a: '17' },
+    { q: '۴۸ ÷ ۶ چند می‌شود؟', a: '8' },
+    { q: '۱۰ + ۱۵ چند می‌شود؟', a: '25' }
+  ],
+  speed: [
+    { q: 'وقتی علامت شروع را دیدی، سریع دکمه را بزن!', a: 'go' },
+    { q: 'آماده‌ای؟ سریع دکمه را بزن!', a: 'go' },
+    { q: 'مرحله سوم؛ هرچه سریع‌تر!', a: 'go' },
+    { q: 'مرحله چهارم؛ شروع!', a: 'go' },
+    { q: 'مرحله آخر؛ سریع باش!', a: 'go' }
+  ]
+};
+
+app.get('/', (_req, res) => {
+  res.send('Donya Ye Raqabat Server is Online!');
 });
 
-wss.on("connection", (ws) => {
-  if (waitingPlayer && waitingPlayer.readyState === WebSocket.OPEN) {
-    const room = ++roomNumber;
+app.get('/health', (_req, res) => {
+  res.json({
+    ok: true,
+    waiting: waiting.size,
+    rooms: rooms.size
+  });
+});
 
-    ws.room = room;
-    waitingPlayer.room = room;
+function send(ws, data) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify(data));
+  }
+}
 
-    ws.send(JSON.stringify({ type: "matched", room }));
-    waitingPlayer.send(JSON.stringify({ type: "matched", room }));
+function broadcast(room, data) {
+  room.players.forEach(p => send(p, data));
+}
 
-    waitingPlayer = null;
-  } else {
-    waitingPlayer = ws;
-    ws.send(JSON.stringify({ type: "waiting" }));
+function otherPlayer(room, ws) {
+  return room.players.find(p => p !== ws);
+}
+
+function scoresFor(room, ws) {
+  const i = room.players.indexOf(ws);
+  const j = 1 - i;
+
+  return {
+    you: room.scores[i],
+    opponent: room.scores[j]
+  };
+}
+
+function sendScores(room) {
+  room.players.forEach(p => {
+    send(p, {
+      type: 'score',
+      ...scoresFor(room, p)
+    });
+  });
+}
+
+function normalizeAnswer(value) {
+  return String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/ي/g, 'ی')
+    .replace(/ك/g, 'ک')
+    .replace(/\s+/g, ' ');
+}
+
+function startCountdown(room) {
+  let n = 3;
+
+  const tick = () => {
+    if (room.finished) return;
+
+    broadcast(room, {
+      type: 'countdown',
+      value: n
+    });
+
+    if (n === 0) {
+      startRound(room);
+      return;
+    }
+
+    n--;
+    setTimeout(tick, 1000);
+  };
+
+  tick();
+}
+
+function startRound(room) {
+  if (room.finished) return;
+
+  room.round++;
+
+  if (room.round > 5) {
+    return finishGame(room);
   }
 
-  ws.on("message", (message) => {
-    wss.clients.forEach((client) => {
-      if (
-        client !== ws &&
-        client.readyState === WebSocket.OPEN &&
-        client.room === ws.room
-      ) {
-        client.send(message.toString());
+  room.answers = new Map();
+  room.roundResolved = false;
+
+  if (room.kind === 'tic') {
+    room.board = Array(9).fill('');
+    room.turn = (room.round - 1) % 2;
+    broadcastTic(room);
+  } else {
+    room.prompt = challenges[room.kind][room.round - 1];
+
+    broadcast(room, {
+      type: 'round_start',
+      round: room.round,
+      prompt: {
+        q: room.prompt.q
       }
+    });
+  }
+}
+
+function broadcastTic(room) {
+  room.players.forEach((p, i) => {
+    send(p, {
+      type: 'tic_state',
+      board: room.board,
+      turn: room.symbols[room.turn],
+      round: room.round
+    });
+  });
+}
+
+function finishRound(room, winnerIndex) {
+  if (room.roundResolved || room.finished) return;
+
+  room.roundResolved = true;
+
+  if (winnerIndex === 0 || winnerIndex === 1) {
+    room.scores[winnerIndex]++;
+  }
+
+  room.players.forEach((p, i) => {
+    send(p, {
+      type: 'round_result',
+      round: room.round,
+      you: room.scores[i],
+      opponent: room.scores[1 - i],
+      message:
+        winnerIndex === -1
+          ? 'این دست مساوی شد!'
+          : winnerIndex === i
+          ? 'این دست رو بردی! 🎉'
+          : 'این دست رو حریف برد.'
     });
   });
 
-  ws.on("close", () => {
-    if (waitingPlayer === ws) waitingPlayer = null;
+  sendScores(room);
 
-    wss.clients.forEach((client) => {
-      if (
-        client !== ws &&
-        client.readyState === WebSocket.OPEN &&
-        client.room === ws.room
-      ) {
-        client.send(JSON.stringify({ type: "opponent_left" }));
-      }
+  setTimeout(() => {
+    if (room.round >= 5) {
+      finishGame(room);
+    } else {
+      startRound(room);
+    }
+  }, 1400);
+}
+
+function finishGame(room) {
+  if (room.finished) return;
+
+  room.finished = true;
+
+  room.players.forEach((p, i) => {
+    const result =
+      room.scores[i] > room.scores[1 - i]
+        ? 'win'
+        : room.scores[i] < room.scores[1 - i]
+        ? 'lose'
+        : 'draw';
+
+    send(p, {
+      type: 'game_over',
+      result,
+      ...scoresFor(room, p)
     });
+  });
+
+  setTimeout(() => {
+    room.players.forEach(p => {
+      p.room = null;
+    });
+
+    rooms.delete(room.id);
+  }, 30000);
+}
+
+function leaveRoom(ws) {
+  const room = ws.room;
+
+  if (!room) return;
+
+  const opponent = otherPlayer(room, ws);
+
+  send(opponent, {
+    type: 'opponent_left'
+  });
+
+  room.finished = true;
+
+  room.players.forEach(p => {
+    p.room = null;
+  });
+
+  rooms.delete(room.id);
+}
+
+function joinQueue(ws, data) {
+  const kind = [
+    'tic',
+    'word',
+    'math',
+    'speed'
+  ].includes(data.kind)
+    ? data.kind
+    : 'tic';
+
+  ws.playerName = String(data.name || 'بازیکن').slice(0, 24);
+  ws.kind = kind;
+
+  const opponent = waiting.get(kind);
+
+  if (!opponent || opponent.readyState !== WebSocket.OPEN) {
+    waiting.set(kind, ws);
+    send(ws, { type: 'waiting' });
+    return;
+  }
+
+  waiting.delete(kind);
+
+  const id = nextRoomId++;
+
+  const players = [opponent, ws];
+
+  const room = {
+    id,
+    players,
+    kind,
+    round: 0,
+    scores: [0, 0],
+    symbols: ['X', 'O'],
+    board: Array(9).fill(''),
+    turn: 0,
+    answers: new Map(),
+    finished: false,
+    roundResolved: false
+  };
+
+  rooms.set(id, room);
+
+  players.forEach((p, i) => {
+    p.room = room;
+
+    send(p, {
+      type: 'matched',
+      room: id,
+      symbol: room.symbols[i],
+      opponent: players[1 - i].playerName
+    });
+  });
+
+  startCountdown(room);
+}
+
+wss.on('connection', ws => {
+  ws.on('message', raw => {
+    let data;
+
+    try {
+      data = JSON.parse(raw.toString());
+    } catch {
+      return send(ws, {
+        type: 'error',
+        message: 'پیام نامعتبر است.'
+      });
+    }
+
+    if (data.type === 'find') {
+      return joinQueue(ws, data);
+    }
+
+    const room = ws.room;
+
+    if (!room || room.finished) {
+      return send(ws, {
+        type: 'error',
+        message: 'اتاق مسابقه پیدا نشد؛ دوباره جست‌وجو کن.'
+      });
+    }
+
+    if (data.type === 'leave') {
+      return leaveRoom(ws);
+    }
+
+    if (room.roundResolved) return;
+
+    if (room.kind === 'tic' && data.type === 'tic_move') {
+      const index = Number(data.index);
+      const playerIndex = room.players.indexOf(ws);
+
+      if (
+        playerIndex !== room.turn ||
+        !Number.isInteger(index) ||
+        index < 0 ||
+        index > 8 ||
+        room.board[index]
+      ) {
+        return;
+      }
+
+      room.board[index] = room.symbols[playerIndex];
+
+      const b = room.board;
+
+      const wins = [
+        [0, 1, 2],
+        [3, 4, 5],
+        [6, 7, 8],
+        [0, 3, 6],
+        [1, 4, 7],
+        [2, 5, 8],
+        [0, 4, 8],
+        [2, 4, 6]
+      ];
+
+      const won = wins.some(line =>
+        line.every(i => b[i] === room.symbols[playerIndex])
+      );
+
+      if (won) {
+        broadcastTic(room);
+        return finishRound(room, playerIndex);
+      }
+
+      if (b.every(Boolean)) {
+        broadcastTic(room);
+        return finishRound(room, -1);
+      }
+
+      room.turn = 1 - room.turn;
+      return broadcastTic(room);
+    }
+
+    if (room.kind !== 'tic' && data.type === 'answer') {
+      if (
+        Number(data.round) !== room.round ||
+        room.answers.has(ws)
+      ) {
+        return;
+      }
+
+      const expected = normalizeAnswer(room.prompt.a);
+      const actual = normalizeAnswer(data.answer);
+
+      if (actual !== expected) {
+        return send(ws, {
+          type: 'answer_wrong',
+          message: 'جواب درست نیست؛ دوباره تلاش کن.'
+        });
+      }
+
+      room.answers.set(ws, true);
+
+      const winnerIndex = room.players.indexOf(ws);
+
+      finishRound(room, winnerIndex);
+    }
+  });
+
+  ws.on('close', () => {
+    for (const [kind, player] of waiting.entries()) {
+      if (player === ws) waiting.delete(kind);
+    }
+
+    leaveRoom(ws);
   });
 });
 
-server.listen(process.env.PORT || 3000, "0.0.0.0", () => {
-  console.log("Game server is running!");
-});
+server.listen(
+  process.env.PORT || 3000,
+  '0.0.0.0',
+  () => console.log('Game server is running!')
+);
