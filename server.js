@@ -16,12 +16,11 @@ app.use((req,res,next)=>{
   next();
 });
 
-// لیدربرد
 const leaderboard = new Map();
 
 app.post('/api/leaderboard',(req,res)=>{
   const name=String(req.body?.name||'').trim().slice(0,24);
-  if(!name) return res.status(400).json({error:'name_required'});
+  if(!name)return res.status(400).json({error:'name_required'});
 
   const coins=Math.max(0,Math.min(100000000,Math.floor(Number(req.body.coins)||0)));
   const level=Math.max(0,Math.min(100000,Math.floor(Number(req.body.level)||0)));
@@ -72,18 +71,16 @@ const challenges={
   ]
 };
 
-app.get('/',(_req,res)=>{
-  res.send('Donya Ye Raqabat Server is Online!');
-});
-
-app.get('/health',(_req,res)=>{
-  res.json({ok:true,waiting:waiting.size,rooms:rooms.size});
-});
+app.get('/',(_req,res)=>res.send('Donya Ye Raqabat Server is Online!'));
+app.get('/health',(_req,res)=>res.json({
+  ok:true,
+  waiting:waiting.size,
+  rooms:rooms.size
+}));
 
 function send(ws,data){
-  if(ws&&ws.readyState===WebSocket.OPEN){
+  if(ws&&ws.readyState===WebSocket.OPEN)
     ws.send(JSON.stringify(data));
-  }
 }
 
 function broadcast(room,data){
@@ -114,34 +111,11 @@ function normalizeAnswer(v){
     .replace(/\s+/g,' ');
 }
 
-// ساخت مین‌ها
-function makeMines(){
-  const a=[];
-  while(a.length<3){
-    const n=Math.floor(Math.random()*25);
-    if(!a.includes(n)) a.push(n);
-  }
-  return a;
-}
-
-function broadcastMines(room,extra={}){
-  room.players.forEach(p=>{
-    send(p,{
-      type:'mines_state',
-      round:room.round,
-      revealed:room.revealed,
-      turn:room.symbols[room.turn],
-      ...extra
-    });
-  });
-}
-
-// شروع شمارش معکوس
 function startCountdown(room){
   let n=3;
 
   const tick=()=>{
-    if(room.finished) return;
+    if(room.finished)return;
 
     broadcast(room,{type:'countdown',value:n});
 
@@ -157,13 +131,49 @@ function startCountdown(room){
   tick();
 }
 
-// شروع دست
+function makeMines(){
+  const a=[];
+
+  while(a.length<3){
+    const n=Math.floor(Math.random()*25);
+    if(!a.includes(n))a.push(n);
+  }
+
+  return a;
+}
+
+function broadcastMines(room,extra={}){
+  room.players.forEach(p=>{
+    send(p,{
+      type:'mines_state',
+      round:room.round,
+      revealed:room.revealed,
+      turn:room.symbols[room.turn],
+      ...extra
+    });
+  });
+}
+
 function startRound(room){
-  if(room.finished) return;
+  if(room.finished)return;
+
+  if(room.kind==='fleet'){
+    room.phase='place';
+    room.ships=[[],[],[]];
+    room.shots=Array.from({length:3},()=> 
+      Array.from({length:3},()=>Array(36).fill(''))
+    );
+    room.eliminated=[false,false,false];
+    room.target=[1,2,0];
+    room.turn=0;
+
+    broadcastFleet(room,'سه خانه برای کشتی‌هایت انتخاب کن.');
+    return;
+  }
 
   room.round++;
 
-  if(room.round>5) return finishGame(room);
+  if(room.round>5)return finishGame(room);
 
   room.answers=new Map();
   room.roundResolved=false;
@@ -173,20 +183,17 @@ function startRound(room){
     room.turn=(room.round-1)%2;
     broadcastTic(room);
   }
-
   else if(room.kind==='dice'){
     room.turn=(room.round-1)%2;
     room.diceRolled=[false,false];
     broadcastDice(room);
   }
-
   else if(room.kind==='mines'){
     room.mines=makeMines();
     room.revealed=Array(25).fill(false);
     room.turn=(room.round-1)%2;
     broadcastMines(room);
   }
-
   else{
     room.prompt=challenges[room.kind][room.round-1];
     broadcast(room,{
@@ -197,7 +204,6 @@ function startRound(room){
   }
 }
 
-// وضعیت تاس‌ها
 function broadcastDice(room){
   room.players.forEach(p=>{
     send(p,{
@@ -211,7 +217,6 @@ function broadcastDice(room){
   });
 }
 
-// وضعیت دوز
 function broadcastTic(room){
   room.players.forEach(p=>{
     send(p,{
@@ -223,15 +228,13 @@ function broadcastTic(room){
   });
 }
 
-// پایان دست
 function finishRound(room,winnerIndex){
-  if(room.roundResolved||room.finished) return;
+  if(room.roundResolved||room.finished)return;
 
   room.roundResolved=true;
 
-  if(winnerIndex===0||winnerIndex===1){
+  if(winnerIndex===0||winnerIndex===1)
     room.scores[winnerIndex]++;
-  }
 
   room.players.forEach((p,i)=>{
     send(p,{
@@ -251,17 +254,13 @@ function finishRound(room,winnerIndex){
   sendScores(room);
 
   setTimeout(()=>{
-    if(room.round>=5){
-      finishGame(room);
-    }else{
-      startRound(room);
-    }
+    if(room.round>=5)finishGame(room);
+    else startRound(room);
   },1600);
 }
 
-// پایان مسابقه
 function finishGame(room){
-  if(room.finished) return;
+  if(room.finished)return;
 
   room.finished=true;
 
@@ -286,10 +285,9 @@ function finishGame(room){
   },30000);
 }
 
-// خروج بازیکن
 function leaveRoom(ws){
   const room=ws.room;
-  if(!room) return;
+  if(!room)return;
 
   send(otherPlayer(room,ws),{type:'opponent_left'});
 
@@ -298,20 +296,83 @@ function leaveRoom(ws){
   rooms.delete(room.id);
 }
 
-// جست‌وجوی حریف
 function joinQueue(ws,data){
-  const allowed=[
-    'tic','word','math','speed','mines','dice'
-  ];
-
+  const allowed=['tic','word','math','speed','mines','dice','fleet'];
   const kind=allowed.includes(data.kind)?data.kind:'tic';
 
   ws.playerName=String(data.name||'بازیکن').slice(0,24);
   ws.kind=kind;
 
+  if(kind==='fleet'){
+    let queue=waiting.get(kind)||[];
+
+    queue=queue.filter(p=>
+      p.readyState===WebSocket.OPEN&&!p.room
+    );
+
+    if(!queue.includes(ws))queue.push(ws);
+
+    if(queue.length<3){
+      waiting.set(kind,queue);
+      send(ws,{
+        type:'waiting',
+        needed:3,
+        waiting:queue.length
+      });
+      return;
+    }
+
+    const players=queue.slice(0,3);
+    const rest=queue.slice(3);
+
+    if(rest.length)waiting.set(kind,rest);
+    else waiting.delete(kind);
+
+    const id=nextRoomId++;
+
+    const room={
+      id,
+      players,
+      kind,
+      round:1,
+      scores:[0,0,0],
+      symbols:['P0','P1','P2'],
+      finished:false,
+      roundResolved:false,
+      phase:'place',
+      ships:[[],[],[]],
+      shots:Array.from({length:3},()=> 
+        Array.from({length:3},()=>Array(36).fill(''))
+      ),
+      turn:0,
+      eliminated:[false,false,false],
+      target:[1,2,0]
+    };
+
+    rooms.set(id,room);
+
+    players.forEach((p,i)=>{
+      p.room=room;
+
+      send(p,{
+        type:'matched',
+        room:id,
+        symbol:room.symbols[i],
+        opponent:players
+          .filter((_,j)=>j!==i)
+          .map(x=>x.playerName)
+          .join(' و '),
+        players:players.map(x=>x.playerName)
+      });
+    });
+
+    startCountdown(room);
+    return;
+  }
+
   const opponent=waiting.get(kind);
 
-  if(!opponent||opponent.readyState!==WebSocket.OPEN){
+  if(!opponent||opponent.readyState!==WebSocket.OPEN||opponent.room){
     waiting.set(kind,ws);
     send(ws,{type:'waiting'});
     return;
@@ -323,10 +384,7 @@ function joinQueue(ws,data){
   const players=[opponent,ws];
 
   const room={
-    id,
-    players,
-    kind,
-    round:0,
+    id,players,kind,round:0,
     scores:[0,0],
     symbols:['X','O'],
     board:Array(9).fill(''),
@@ -343,7 +401,6 @@ function joinQueue(ws,data){
 
   players.forEach((p,i)=>{
     p.room=room;
-
     send(p,{
       type:'matched',
       room:id,
@@ -355,24 +412,185 @@ function joinQueue(ws,data){
   startCountdown(room);
 }
 
-// اتصال بازیکنان
-wss.on('connection',ws=>{
+function fleetStateFor(room,ws,message){
+  const i=room.players.indexOf(ws);
+  let targetIndex=room.target[i];
 
+  for(let tries=0;tries<3&&room.eliminated[targetIndex];tries++)
+    targetIndex=(targetIndex+1)%3;
+
+  room.target[i]=targetIndex;
+
+  const board=room.phase==='place'
+    ?Array.from({length:36},(_,n)=>
+      room.ships[i].includes(n)?'ship':''
+    )
+    :room.shots[i][targetIndex];
+
+  const opponents=room.players
+    .map((p,j)=>({
+      name:p.playerName,
+      remaining:room.ships[j].length-
+        room.shots[j].filter((v,k)=>
+          v==='hit'&&room.ships[j].includes(k)
+        ).length,
+      alive:!room.eliminated[j]
+    }))
+    .filter((_,j)=>j!==i);
+
+  send(ws,{
+    type:'fleet_state',
+    phase:room.phase,
+    board,
+    opponents,
+    placed:room.ships[i].length,
+    canShoot:room.phase==='battle'&&room.turn===i&&!room.eliminated[i],
+    target:room.players[targetIndex].playerName,
+    turn:room.players[room.turn]?.playerName||'',
+    message
+  });
+}
+
+function broadcastFleet(room,message){
+  room.players.forEach(p=>fleetStateFor(room,p,message));
+}
+
+function advanceFleetTurn(room){
+  for(let step=1;step<=3;step++){
+    const n=(room.turn+step)%3;
+
+    if(!room.eliminated[n]){
+      room.turn=n;
+      return;
+    }
+  }
+}
+
+function fleetFinishIfNeeded(room){
+  const alive=room.eliminated
+    .map((v,i)=>!v?i:-1)
+    .filter(i=>i>=0);
+
+  if(alive.length<=1){
+    room.finished=true;
+
+    room.players.forEach((p,i)=>{
+      send(p,{
+        type:'game_over',
+        result:alive[0]===i?'win':'lose',
+        you:room.scores[i],
+        opponent:0,
+        winner:alive.length
+          ?room.players[alive[0]].playerName
+          :'بدون برنده'
+      });
+    });
+
+    setTimeout(()=>{
+      room.players.forEach(p=>p.room=null);
+      rooms.delete(room.id);
+    },30000);
+
+    return true;
+  }
+
+  return false;
+}
+
+function handleFleet(room,ws,data){
+  const i=room.players.indexOf(ws);
+
+  if(i<0||room.finished)return;
+
+  if(room.phase==='place'&&data.type==='fleet_place'){
+    const n=Number(data.index);
+
+    if(
+      !Number.isInteger(n)||
+      n<0||n>=36||
+      room.ships[i].length>=3||
+      room.ships[i].includes(n)
+    )return;
+
+    room.ships[i].push(n);
+
+    if(room.ships.every(a=>a.length===3)){
+      room.phase='battle';
+      room.turn=0;
+      broadcastFleet(room,'⚓ همه ناوگان‌ها آماده‌اند! نبرد شروع شد.');
+    }
+    else{
+      broadcastFleet(room,`کشتی ${room.ships[i].length} از ۳ ثبت شد.`);
+    }
+
+    return;
+  }
+
+  if(room.phase==='battle'&&data.type==='fleet_shot'){
+    if(room.turn!==i||room.eliminated[i])return;
+
+    const n=Number(data.index);
+
+    if(!Number.isInteger(n)||n<0||n>=36)return;
+
+    let target=room.target[i];
+
+    for(let tries=0;tries<3&&room.eliminated[target];tries++)
+      target=(target+1)%3;
+
+    if(target===i||room.shots[i][target][n])return;
+
+    const hit=room.ships[target].includes(n);
+
+    room.shots[i][target][n]=hit?'hit':'miss';
+
+    const targetHits=room.players.reduce((sum,_p,shooter)=>
+      sum+room.shots[shooter][target].filter((v,k)=>
+        v==='hit'&&room.ships[target].includes(k)
+      ).length,0
+    );
+
+    if(targetHits>=3)room.eliminated[target]=true;
+
+    room.players.forEach(p=>{
+      send(p,{
+        type:'fleet_shot',
+        shooter:ws.playerName,
+        target:room.players[target].playerName,
+        index:n,
+        result:hit?'hit':'miss',
+        message:hit
+          ?'💥 برخورد! یکی از کشتی‌های حریف پیدا شد.'
+          :'🌊 شلیک به آب خورد!'
+      });
+    });
+
+    if(fleetFinishIfNeeded(room))return;
+
+    advanceFleetTurn(room);
+
+    broadcastFleet(room,hit
+      ?'💥 برخورد موفق!'
+      :'🌊 این شلیک به آب خورد.'
+    );
+  }
+}
+
+wss.on('connection',ws=>{
   ws.on('message',raw=>{
     let data;
 
     try{
       data=JSON.parse(raw.toString());
-    }catch{
+    }
+    catch{
       return send(ws,{
         type:'error',
         message:'پیام نامعتبر است.'
       });
     }
 
-    if(data.type==='find'){
-      return joinQueue(ws,data);
-    }
+    if(data.type==='find')return joinQueue(ws,data);
 
     const room=ws.room;
 
@@ -383,20 +601,20 @@ wss.on('connection',ws=>{
       });
     }
 
-    if(data.type==='leave'){
-      return leaveRoom(ws);
-    }
+    if(data.type==='leave')return leaveRoom(ws);
 
-    if(room.roundResolved) return;
+    if(room.kind==='fleet')
+      return handleFleet(room,ws,data);
 
-    // بازی جفت شیش
+    if(room.roundResolved)return;
+
     if(room.kind==='dice'&&data.type==='dice_roll'){
       const playerIndex=room.players.indexOf(ws);
 
       if(
         playerIndex!==room.turn||
         room.diceRolled[playerIndex]
-      ) return;
+      )return;
 
       room.diceRolled[playerIndex]=true;
 
@@ -409,26 +627,22 @@ wss.on('connection',ws=>{
           type:'dice_result',
           round:room.round,
           player:room.symbols[playerIndex],
-          die1,
-          die2,
-          won,
+          die1,die2,won,
           message:won
             ?'🎉 جفت شیش! این دست را بردی!'
             :`تاس‌ها ${die1} و ${die2} آمدند.`
         });
       });
 
-      if(won) return finishRound(room,playerIndex);
+      if(won)return finishRound(room,playerIndex);
 
-      if(room.diceRolled.every(Boolean)){
+      if(room.diceRolled.every(Boolean))
         return finishRound(room,-1);
-      }
 
       room.turn=1-room.turn;
       return broadcastDice(room);
     }
 
-    // مین‌یاب
     if(room.kind==='mines'&&data.type==='mine_move'){
       const index=Number(data.index);
       const playerIndex=room.players.indexOf(ws);
@@ -436,10 +650,9 @@ wss.on('connection',ws=>{
       if(
         playerIndex!==room.turn||
         !Number.isInteger(index)||
-        index<0||
-        index>24||
+        index<0||index>24||
         room.revealed[index]
-      ) return;
+      )return;
 
       room.revealed[index]=true;
 
@@ -457,7 +670,6 @@ wss.on('connection',ws=>{
       return broadcastMines(room);
     }
 
-    // دوز
     if(room.kind==='tic'&&data.type==='tic_move'){
       const index=Number(data.index);
       const playerIndex=room.players.indexOf(ws);
@@ -465,10 +677,9 @@ wss.on('connection',ws=>{
       if(
         playerIndex!==room.turn||
         !Number.isInteger(index)||
-        index<0||
-        index>8||
+        index<0||index>8||
         room.board[index]
-      ) return;
+      )return;
 
       room.board[index]=room.symbols[playerIndex];
 
@@ -498,7 +709,6 @@ wss.on('connection',ws=>{
       return broadcastTic(room);
     }
 
-    // بازی‌های سؤال‌محور
     if(
       room.kind!=='tic'&&
       room.kind!=='mines'&&
@@ -508,7 +718,7 @@ wss.on('connection',ws=>{
       if(
         Number(data.round)!==room.round||
         room.answers.has(ws)
-      ) return;
+      )return;
 
       const expected=normalizeAnswer(room.prompt.a);
       const actual=normalizeAnswer(data.answer);
@@ -526,15 +736,21 @@ wss.on('connection',ws=>{
   });
 
   ws.on('close',()=>{
-    for(const[kind,player]of waiting.entries()){
-      if(player===ws) waiting.delete(kind);
+    for(const[kind,value]of waiting.entries()){
+      if(Array.isArray(value)){
+        const next=value.filter(p=>p!==ws);
+        if(next.length)waiting.set(kind,next);
+        else waiting.delete(kind);
+      }
+      else if(value===ws){
+        waiting.delete(kind);
+      }
     }
 
     leaveRoom(ws);
   });
 });
 
-// اجرای سرور
 server.listen(
   process.env.PORT||3000,
   '0.0.0.0',
