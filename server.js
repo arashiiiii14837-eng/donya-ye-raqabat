@@ -12,7 +12,11 @@ app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-  if (req.method === 'OPTIONS') return res.sendStatus(204);
+
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(204);
+  }
+
   next();
 });
 
@@ -67,10 +71,13 @@ app.get('/api/leaderboard', (req, res) => {
   });
 });
 
+// سیستم اتاق‌ها
 let nextRoomId = 1;
+
 const waiting = new Map();
 const rooms = new Map();
 
+// سؤال‌های مسابقه
 const challenges = {
   word: [
     { q: 'کدام واژه با «آ» شروع می‌شود؟ (آب، میز، کتاب)', a: 'آب' },
@@ -79,6 +86,7 @@ const challenges = {
     { q: 'کدام یک میوه است؟ (سیب، صندلی، مداد)', a: 'سیب' },
     { q: 'مخالف «بلند» چیست؟', a: 'کوتاه' }
   ],
+
   math: [
     { q: '۷ + ۵ چند می‌شود؟', a: '12' },
     { q: '۹ × ۳ چند می‌شود؟', a: '27' },
@@ -86,6 +94,7 @@ const challenges = {
     { q: '۴۸ ÷ ۶ چند می‌شود؟', a: '8' },
     { q: '۱۰ + ۱۵ چند می‌شود؟', a: '25' }
   ],
+
   speed: [
     { q: 'وقتی علامت شروع را دیدی، سریع دکمه را بزن!', a: 'go' },
     { q: 'آماده‌ای؟ سریع دکمه را بزن!', a: 'go' },
@@ -95,6 +104,7 @@ const challenges = {
   ]
 };
 
+// صفحه اصلی سرور
 app.get('/', (_req, res) => {
   res.send('Donya Ye Raqabat Server is Online!');
 });
@@ -107,6 +117,7 @@ app.get('/health', (_req, res) => {
   });
 });
 
+// ارسال پیام
 function send(ws, data) {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify(data));
@@ -123,11 +134,10 @@ function otherPlayer(room, ws) {
 
 function scoresFor(room, ws) {
   const i = room.players.indexOf(ws);
-  const j = 1 - i;
 
   return {
     you: room.scores[i],
-    opponent: room.scores[j]
+    opponent: room.scores[1 - i]
   };
 }
 
@@ -149,6 +159,35 @@ function normalizeAnswer(value) {
     .replace(/\s+/g, ' ');
 }
 
+// ساخت مین‌ها
+function makeMines() {
+  const mines = [];
+
+  while (mines.length < 3) {
+    const n = Math.floor(Math.random() * 25);
+
+    if (!mines.includes(n)) {
+      mines.push(n);
+    }
+  }
+
+  return mines;
+}
+
+// ارسال وضعیت مین‌یاب
+function broadcastMines(room, extra = {}) {
+  room.players.forEach(p => {
+    send(p, {
+      type: 'mines_state',
+      round: room.round,
+      revealed: room.revealed,
+      turn: room.symbols[room.turn],
+      ...extra
+    });
+  });
+}
+
+// شمارش معکوس
 function startCountdown(room) {
   let n = 3;
 
@@ -166,12 +205,14 @@ function startCountdown(room) {
     }
 
     n--;
+
     setTimeout(tick, 1000);
   };
 
   tick();
 }
 
+// شروع مرحله
 function startRound(room) {
   if (room.finished) return;
 
@@ -187,8 +228,19 @@ function startRound(room) {
   if (room.kind === 'tic') {
     room.board = Array(9).fill('');
     room.turn = (room.round - 1) % 2;
+
     broadcastTic(room);
-  } else {
+  }
+
+  else if (room.kind === 'mines') {
+    room.mines = makeMines();
+    room.revealed = Array(25).fill(false);
+    room.turn = (room.round - 1) % 2;
+
+    broadcastMines(room);
+  }
+
+  else {
     room.prompt = challenges[room.kind][room.round - 1];
 
     broadcast(room, {
@@ -201,6 +253,7 @@ function startRound(room) {
   }
 }
 
+// وضعیت دوز
 function broadcastTic(room) {
   room.players.forEach(p => {
     send(p, {
@@ -212,6 +265,7 @@ function broadcastTic(room) {
   });
 }
 
+// پایان دست
 function finishRound(room, winnerIndex) {
   if (room.roundResolved || room.finished) return;
 
@@ -227,6 +281,7 @@ function finishRound(room, winnerIndex) {
       round: room.round,
       you: room.scores[i],
       opponent: room.scores[1 - i],
+
       message:
         winnerIndex === -1
           ? 'این دست مساوی شد!'
@@ -244,9 +299,10 @@ function finishRound(room, winnerIndex) {
     } else {
       startRound(room);
     }
-  }, 1400);
+  }, 1600);
 }
 
+// پایان مسابقه
 function finishGame(room) {
   if (room.finished) return;
 
@@ -276,6 +332,7 @@ function finishGame(room) {
   }, 30000);
 }
 
+// خروج بازیکن
 function leaveRoom(ws) {
   const room = ws.room;
 
@@ -296,13 +353,17 @@ function leaveRoom(ws) {
   rooms.delete(room.id);
 }
 
+// جست‌وجوی حریف
 function joinQueue(ws, data) {
-  const kind = [
+  const allowed = [
     'tic',
     'word',
     'math',
-    'speed'
-  ].includes(data.kind)
+    'speed',
+    'mines'
+  ];
+
+  const kind = allowed.includes(data.kind)
     ? data.kind
     : 'tic';
 
@@ -313,13 +374,18 @@ function joinQueue(ws, data) {
 
   if (!opponent || opponent.readyState !== WebSocket.OPEN) {
     waiting.set(kind, ws);
-    send(ws, { type: 'waiting' });
+
+    send(ws, {
+      type: 'waiting'
+    });
+
     return;
   }
 
   waiting.delete(kind);
 
   const id = nextRoomId++;
+
   const players = [opponent, ws];
 
   const room = {
@@ -333,7 +399,9 @@ function joinQueue(ws, data) {
     turn: 0,
     answers: new Map(),
     finished: false,
-    roundResolved: false
+    roundResolved: false,
+    mines: [],
+    revealed: Array(25).fill(false)
   };
 
   rooms.set(id, room);
@@ -352,7 +420,9 @@ function joinQueue(ws, data) {
   startCountdown(room);
 }
 
+// اتصال بازیکنان
 wss.on('connection', ws => {
+
   ws.on('message', raw => {
     let data;
 
@@ -384,6 +454,45 @@ wss.on('connection', ws => {
 
     if (room.roundResolved) return;
 
+    // حرکت در مین‌یاب
+    if (room.kind === 'mines' && data.type === 'mine_move') {
+      const index = Number(data.index);
+      const playerIndex = room.players.indexOf(ws);
+
+      if (
+        playerIndex !== room.turn ||
+        !Number.isInteger(index) ||
+        index < 0 ||
+        index > 24 ||
+        room.revealed[index]
+      ) {
+        return;
+      }
+
+      room.revealed[index] = true;
+
+      if (room.mines.includes(index)) {
+        broadcastMines(room, {
+          mines: room.mines
+        });
+
+        return finishRound(room, 1 - playerIndex);
+      }
+
+      if (room.revealed.every(Boolean)) {
+        broadcastMines(room, {
+          mines: room.mines
+        });
+
+        return finishRound(room, -1);
+      }
+
+      room.turn = 1 - room.turn;
+
+      return broadcastMines(room);
+    }
+
+    // حرکت در دوز
     if (room.kind === 'tic' && data.type === 'tic_move') {
       const index = Number(data.index);
       const playerIndex = room.players.indexOf(ws);
@@ -428,10 +537,16 @@ wss.on('connection', ws => {
       }
 
       room.turn = 1 - room.turn;
+
       return broadcastTic(room);
     }
 
-    if (room.kind !== 'tic' && data.type === 'answer') {
+    // جواب بازی‌های سؤال‌محور
+    if (
+      room.kind !== 'tic' &&
+      room.kind !== 'mines' &&
+      data.type === 'answer'
+    ) {
       if (
         Number(data.round) !== room.round ||
         room.answers.has(ws)
@@ -451,21 +566,25 @@ wss.on('connection', ws => {
 
       room.answers.set(ws, true);
 
-      const winnerIndex = room.players.indexOf(ws);
-
-      finishRound(room, winnerIndex);
+      return finishRound(
+        room,
+        room.players.indexOf(ws)
+      );
     }
   });
 
   ws.on('close', () => {
     for (const [kind, player] of waiting.entries()) {
-      if (player === ws) waiting.delete(kind);
+      if (player === ws) {
+        waiting.delete(kind);
+      }
     }
 
     leaveRoom(ws);
   });
 });
 
+// اجرای سرور
 server.listen(
   process.env.PORT || 3000,
   '0.0.0.0',
